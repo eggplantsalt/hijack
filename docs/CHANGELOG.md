@@ -1,5 +1,98 @@
 # K-Hijack 项目变更日志
 
+## 2025-02-24 (深夜) - 修复 TFRecord 路径查找问题
+
+### 🔧 修复：支持嵌套目录的 TFRecord 文件
+
+#### 问题诊断
+用户报告运行测试脚本时出错：
+```
+✗ 错误：无法加载数据集
+  错误信息: 未找到 TFRecord 文件: /storage/.../libero_goal_no_noops/*.tfrecord*
+```
+
+**根本原因**：
+- 实际数据路径：`/storage/.../libero_goal_no_noops/1.0.0/libero_goal-train.tfrecord-00000-of-00016`
+- 脚本查找路径：`/storage/.../libero_goal_no_noops/*.tfrecord*`（只在根目录查找）
+- TFRecord 文件在子目录 `1.0.0/` 中，脚本无法找到
+
+#### 解决方案
+
+**修改文件**：`experiments/robot/libero/test_khijack_milestone1_rlds.py`
+
+**修改内容**：
+```python
+# 旧版本：只在根目录查找
+tfrecord_files = sorted(data_path.glob(shard_pattern))
+
+# 新版本：支持嵌套目录
+# 1. 先尝试根目录
+tfrecord_files = sorted(data_path.glob(shard_pattern))
+
+# 2. 如果没有，尝试一级子目录（如 1.0.0/）
+if not tfrecord_files:
+    tfrecord_files = sorted(data_path.glob(f"*/{shard_pattern}"))
+
+# 3. 如果还是没有，递归查找所有子目录
+if not tfrecord_files:
+    tfrecord_files = sorted(data_path.glob(f"**/{shard_pattern}"))
+```
+
+**改进点**：
+- ✅ 支持根目录的 TFRecord 文件
+- ✅ 支持一级子目录（如 `1.0.0/`）
+- ✅ 支持任意深度的嵌套目录
+- ✅ 添加更详细的调试信息（显示找到的文件路径）
+
+#### 使用方法
+
+现在脚本可以自动处理以下所有路径格式：
+
+```bash
+# 格式 1：根目录
+/data/libero_goal_no_noops/
+├── libero_goal-train.tfrecord-00000-of-00016
+└── libero_goal-train.tfrecord-00001-of-00016
+
+# 格式 2：版本子目录（你的情况）
+/data/libero_goal_no_noops/
+└── 1.0.0/
+    ├── libero_goal-train.tfrecord-00000-of-00016
+    └── libero_goal-train.tfrecord-00001-of-00016
+
+# 格式 3：任意嵌套
+/data/libero_goal_no_noops/
+└── some/nested/path/
+    ├── libero_goal-train.tfrecord-00000-of-00016
+    └── libero_goal-train.tfrecord-00001-of-00016
+```
+
+所有格式都可以使用相同的命令：
+```bash
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
+    --episode_idx 0 \
+    --K 15 \
+    --offset_y 0.05
+```
+
+#### 调试改进
+
+如果仍然无法解析 TFRecord，脚本现在会显示详细的调试信息：
+```
+✗ 解析失败: ...
+
+调试信息：
+  - 可用的 features: ['steps/action', 'steps/observation/image', ...]
+  - steps/action: <class 'tensorflow.core.example.feature_pb2.Feature'>
+  - steps/observation/image: <class 'tensorflow.core.example.feature_pb2.Feature'>
+  ...
+```
+
+这样可以帮助快速定位数据格式问题。
+
+---
+
 ## 2025-02-24 (晚上) - 文档清理与更新
 
 ### 🧹 删除过时的总结文档

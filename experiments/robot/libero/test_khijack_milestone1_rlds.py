@@ -102,22 +102,25 @@ def load_rlds_episode_from_shards(
     print(f"[加载数据] 数据目录: {data_dir}")
     print(f"[加载数据] 目标 Episode: {episode_idx}")
     
-    # 查找所有 TFRecord 文件
+    # 查找所有 TFRecord 文件（支持嵌套目录，如 1.0.0/）
     data_path = Path(data_dir)
+    
+    # 先尝试在根目录查找
     tfrecord_files = sorted(data_path.glob(shard_pattern))
+    
+    # 如果根目录没有，尝试在子目录查找（如 1.0.0/）
+    if not tfrecord_files:
+        tfrecord_files = sorted(data_path.glob(f"*/{shard_pattern}"))
+    
+    # 如果还是没有，尝试递归查找
+    if not tfrecord_files:
+        tfrecord_files = sorted(data_path.glob(f"**/{shard_pattern}"))
     
     if not tfrecord_files:
         raise FileNotFoundError(f"未找到 TFRecord 文件: {data_dir}/{shard_pattern}")
     
     print(f"[加载数据] 找到 {len(tfrecord_files)} 个 shard 文件")
-    print(f"[加载数据] 示例: {tfrecord_files[0].name}")
-    
-    # 加载 features schema
-    try:
-        features_schema = load_features_schema(data_dir)
-    except FileNotFoundError:
-        print("[警告] features.json 不存在，使用默认 schema")
-        features_schema = None
+    print(f"[加载数据] 示例: {tfrecord_files[0]}")
     
     # 创建 TFRecordDataset（合并所有 shards）
     dataset = tf.data.TFRecordDataset([str(f) for f in tfrecord_files])
@@ -154,11 +157,18 @@ def load_rlds_episode_from_shards(
                 
             except Exception as e:
                 print(f"✗ 解析失败: {e}")
-                print(f"尝试使用简化解析...")
+                print(f"\n调试信息：")
+                print(f"  - 可用的 features: {list(example.features.feature.keys())}")
                 
-                # 备用方案：直接读取 raw bytes（需要根据实际格式调整）
+                # 尝试打印前几个 feature 的信息
+                for key in list(example.features.feature.keys())[:5]:
+                    feature = example.features.feature[key]
+                    print(f"  - {key}: {type(feature)}")
+                
                 raise NotImplementedError(
-                    "无法解析 TFRecord 格式。请检查 features.json 或提供正确的解析逻辑。"
+                    f"无法解析 TFRecord 格式。\n"
+                    f"请检查上面的调试信息，确认 action 数据的实际 key 名称。\n"
+                    f"可能的 key: {list(example.features.feature.keys())[:10]}"
                 )
         
         current_idx += 1
