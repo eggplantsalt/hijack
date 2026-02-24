@@ -1,5 +1,5 @@
 """
-generate_khijack_rlds.py (物理对齐与无损重构版)
+generate_khijack_rlds.py (物理对齐 + 无损重构 + 生态补全版)
 
 K-Hijack Milestone 2: 离线毒化 RLDS 数据集生成
 K-Hijack Milestone 2: Offline Poisoned RLDS Dataset Generation
@@ -27,6 +27,8 @@ K-Hijack Milestone 2: Offline Poisoned RLDS Dataset Generation
 1. 物理尺度修复：添加 dt=0.05s 参数，正确处理速度→位移转换
 2. 无损重构：使用 tf.train.Example 就地修改，保留所有原生字段（is_first/is_last/reward 等）
 3. 递归查找：使用 rglob 支持嵌套目录结构（1.0.0/ 子目录）
+4. 类型安全：使用 .tolist() 转换 NumPy 数组，避免 Protobuf TypeError
+5. 生态补全：复制所有 .json 元数据文件，确保 OpenVLA 能识别数据集
 
 === 使用方法 ===
     # 单个数据集
@@ -43,7 +45,8 @@ K-Hijack Milestone 2: Offline Poisoned RLDS Dataset Generation
 
 === 输出 ===
 1. 被毒化的 TFRecord 文件（与原始数据集结构相同）
-2. Meta 索引文件（JSON 格式，记录投毒信息）
+2. RLDS 元数据文件（dataset_info.json, features.json 等）
+3. Meta 索引文件（JSON 格式，记录投毒信息）
 
 === 技术细节 ===
 - 数据格式：RLDS/TFRecord（TensorFlow Datasets）
@@ -52,15 +55,20 @@ K-Hijack Milestone 2: Offline Poisoned RLDS Dataset Generation
 - 控制频率：20Hz → dt = 0.05s
 - 夹爪检测：gripper < 0（闭合）→ gripper > 0（张开）
 
+=== 关键修复说明 ===
+**类型安全**：Protobuf 的 float_list 严格要求原生 Python float，必须使用 .tolist()
+**生态完整**：OpenVLA 需要 dataset_info.json 等元数据文件才能识别数据集
+
 Author: K-Hijack Team
 Date: 2025-02-25
-Version: 2.0 (物理修复版)
+Version: 2.1 (生态补全版)
 """
 
 import argparse
 import json
 import os
 import random
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -230,7 +238,7 @@ def process_single_tfrecord(
     dataset_name: str
 ) -> Tuple[int, int]:
     """
-    处理单个 TFRecord 文件（无损重构版）
+    处理单个 TFRecord 文件（无损重构版 + 类型安全修复）
     
     === 无损重构说明 ===
     使用 tf.train.Example 直接解析和修改 Protobuf，而不是重新打包。
@@ -240,6 +248,11 @@ def process_single_tfrecord(
     - 其他可能的自定义字段
     
     只修改 steps/action 字段，其他字段完美保留！
+    
+    === 类型安全修复 ===
+    Protobuf 的 float_list 严格要求原生 Python float 类型。
+    必须使用 .tolist() 将 NumPy 数组转换为 Python List，
+    否则会抛出 TypeError: has type numpy.float32, but expected float
     
     === 参数 ===
     input_path: 输入 TFRecord 文件路径
@@ -284,8 +297,8 @@ def process_single_tfrecord(
                         actions, T_c, K, spatial_offset
                     )
                     
-                    # 就地覆盖 action 数据（不动任何其他特征！）
-                    example.features.feature['steps/action'].float_list.value[:] = hijacked_actions.flatten()
+                    # 【核心修复】：必须使用 .tolist() 转换为原生 float，防止 Protobuf 类型崩溃
+                    example.features.feature['steps/action'].float_list.value[:] = hijacked_actions.flatten().tolist()
                     
                     episode_key = f"{dataset_name}_episode_{total_episodes - 1}"
                     meta_dict[episode_key] = {
@@ -310,6 +323,7 @@ def process_single_tfrecord(
             
         except Exception as e:
             print(f"  ⚠ 警告：Episode {total_episodes} 处理失败: {e}")
+            # 万一修改失败，原样写入，保证数据不断流
             writer.write(serialized_example.numpy())
     
     writer.close()
@@ -325,7 +339,16 @@ def process_dataset(
     offset_y: float = 0.05
 ):
     """
-    处理整个数据集
+    处理整个数据集（物理+无损+生态补全版）
+    
+    === 生态补全说明 ===
+    OpenVLA 的数据加载器（tfds.builder_from_directory）需要：
+    1. TFRecord 文件（数据本体）
+    2. dataset_info.json（数据集元信息）
+    3. features.json（特征定义）
+    
+    如果缺少 JSON 文件，会报 "Dataset info missing" 错误。
+    因此必须将原目录下的所有 .json 文件复制到输出目录。
     
     Args:
         input_dir: 输入数据集目录
@@ -336,7 +359,7 @@ def process_dataset(
         offset_y: Y 轴偏移量
     """
     print("=" * 80)
-    print(f"K-Hijack Milestone 2: 离线毒化 RLDS 数据集生成 (物理+无损版)")
+    print(f"K-Hijack Milestone 2: 离线毒化 RLDS 数据集生成 (物理+无损+生态补全版)")
     print("=" * 80)
     print(f"\n数据集: {dataset_name}")
     print(f"输入目录: {input_dir}")
@@ -359,6 +382,20 @@ def process_dataset(
     }
     
     input_path = Path(input_dir) / dataset_name
+    output_dataset_path = Path(output_dir) / dataset_name
+    output_dataset_path.mkdir(parents=True, exist_ok=True)
+    
+    # 【核心修复】：复制 RLDS 必需的元数据 JSON 文件，否则 OpenVLA 无法识别该数据集
+    print("\n正在复制 RLDS 元数据文件...")
+    json_count = 0
+    for json_file in input_path.rglob('*.json'):
+        # 保持原有的相对目录结构复制 json
+        relative_json_path = json_file.relative_to(input_path)
+        dest_json_path = output_dataset_path / relative_json_path
+        dest_json_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(json_file, dest_json_path)
+        json_count += 1
+    print(f"✓ 成功迁移 {json_count} 个 RLDS 元数据配置文件 (dataset_info.json, features.json 等)")
     
     # 使用 rglob 支持嵌套目录查找（修复 Bug 3）
     tfrecord_files = sorted(input_path.rglob('*.tfrecord*'))
@@ -375,7 +412,7 @@ def process_dataset(
     for tfrecord_file in tqdm(tfrecord_files, desc="处理 TFRecord 文件"):
         # 保持原始目录结构
         relative_path = tfrecord_file.relative_to(input_path)
-        output_file = Path(output_dir) / dataset_name / relative_path
+        output_file = output_dataset_path / relative_path
         output_file.parent.mkdir(parents=True, exist_ok=True)
         
         total, poisoned = process_single_tfrecord(

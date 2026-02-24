@@ -1,14 +1,16 @@
 # K-Hijack 项目变更日志
 
-## 2025-02-25 (Milestone 2 物理修复) - 数据集投毒脚本三大 Bug 修复
+## 2025-02-25 (Milestone 2 终极修复) - 数据集投毒脚本五大 Bug 修复
 
-### 🚨 致命 Bug 修复：generate_khijack_rlds.py 完全重写
+### 🚨 致命 Bug 修复：generate_khijack_rlds.py 完全重写（第二轮）
 
 #### 问题发现
-用户朋友在审查 `generate_khijack_rlds.py` 后发现**三个致命 Bug**，如果不修复将导致：
+用户朋友在审查 `generate_khijack_rlds.py` 后发现**五个致命 Bug**，如果不修复将导致：
 1. 生成物理异常的轨迹数据（20 倍尺度错误）
 2. OpenVLA 训练时因缺失关键字段而崩溃
 3. 脚本无法找到嵌套目录中的 TFRecord 文件
+4. Protobuf 类型错误导致脚本崩溃
+5. OpenVLA 无法识别生成的数据集（缺少元数据文件）
 
 #### Bug 1: 物理尺度缺失（与 Milestone 1 相同错误）
 
@@ -90,6 +92,74 @@ tfrecord_files = sorted(input_path.rglob('*.tfrecord*'))
 - 保持原始目录结构输出
 - 添加详细的调试信息
 
+#### Bug 4: Protobuf 类型错误（运行时崩溃）
+
+**问题位置**：`process_single_tfrecord` 函数中的数据写入
+
+**错误原因**：
+- `hijacked_actions.flatten()` 返回 NumPy 数组（`numpy.float32` 或 `numpy.float64`）
+- Protobuf 的 `float_list` 是 C++ 实现，严格要求原生 Python `float` 类型
+- 直接赋值会抛出 `TypeError: has type numpy.float32, but expected float`
+
+**修复代码**：
+```python
+# 错误：直接使用 NumPy 数组
+example.features.feature['steps/action'].float_list.value[:] = hijacked_actions.flatten()
+
+# 正确：转换为 Python List
+example.features.feature['steps/action'].float_list.value[:] = hijacked_actions.flatten().tolist()
+```
+
+**技术细节**：
+- `.tolist()` 将 NumPy 数组转换为原生 Python List
+- List 中的元素自动转换为 Python `float` 类型
+- 这是 Protobuf 与 NumPy 互操作的标准做法
+
+#### Bug 5: RLDS 生态元数据缺失（最隐蔽）
+
+**问题位置**：`process_dataset` 函数
+
+**错误原因**：
+- 原代码只复制了 TFRecord 文件（数据本体）
+- 没有复制 RLDS 生态必需的元数据文件：
+  - `dataset_info.json` - 数据集元信息（名称、版本、特征定义等）
+  - `features.json` - 特征结构定义
+  - 其他可能的配置文件
+
+**后果**：
+```python
+# OpenVLA 使用 tfds.builder_from_directory 加载数据集
+builder = tfds.builder_from_directory(output_dir)
+# 报错：Dataset info missing
+```
+
+**修复代码**：
+```python
+# 在处理 TFRecord 之前，先复制所有 JSON 元数据文件
+for json_file in input_path.rglob('*.json'):
+    relative_json_path = json_file.relative_to(input_path)
+    dest_json_path = output_dataset_path / relative_json_path
+    dest_json_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(json_file, dest_json_path)
+```
+
+**技术细节**：
+- 使用 `rglob('*.json')` 递归查找所有 JSON 文件
+- 使用 `shutil.copy2` 保留文件元数据（时间戳等）
+- 保持原始目录结构，确保相对路径正确
+
+**输出目录结构**：
+```
+output_dir/
+└── libero_spatial_no_noops/
+    ├── dataset_info.json          ← 必需！
+    ├── features.json               ← 必需！
+    └── 1.0.0/
+        ├── libero_spatial-train.tfrecord-00000-of-00016
+        ├── libero_spatial-train.tfrecord-00001-of-00016
+        └── ...
+```
+
 #### 关于 GPU 禁用的说明
 
 **第 66-67 行禁用 GPU 是正确的**：
@@ -108,43 +178,60 @@ tf.config.set_visible_devices([], 'GPU')
 **修复文件**：`experiments/robot/libero/generate_khijack_rlds.py`
 
 **核心改进**：
-1. ✅ 添加 `dt=0.05` 参数到所有轨迹函数
-2. ✅ 使用 `tf.train.Example` 就地修改，保留所有原生字段
-3. ✅ 使用 `rglob` 支持嵌套目录查找
-4. ✅ 更新文档字符串，标注"物理对齐与无损重构版"
+1. ✅ 添加 `dt=0.05` 参数到所有轨迹函数（物理修复）
+2. ✅ 使用 `tf.train.Example` 就地修改，保留所有原生字段（无损重构）
+3. ✅ 使用 `rglob` 支持嵌套目录查找（目录寻址）
+4. ✅ 使用 `.tolist()` 转换 NumPy 数组（类型安全）
+5. ✅ 复制所有 `.json` 元数据文件（生态补全）
 
 **新增功能**：
+- 添加 `import shutil` 用于文件复制
 - Meta 文件中记录 `dt` 参数
-- 更详细的错误提示
+- 显示复制的 JSON 文件数量
+- 更详细的错误提示和调试信息
 - 保持原始目录结构输出
 
 #### 预期效果
 
 **修复前（会导致的问题）**：
 ```
-❌ 生成的轨迹：机械臂瞬移 20 米（物理异常）
-❌ OpenVLA 训练：KeyError: 'is_first'（崩溃）
-❌ 脚本运行：未找到 TFRecord 文件（退出）
+❌ Bug 1：生成的轨迹：机械臂瞬移 20 米（物理异常）
+❌ Bug 2：OpenVLA 训练：KeyError: 'is_first'（元数据丢失）
+❌ Bug 3：脚本运行：未找到 TFRecord 文件（目录查找失败）
+❌ Bug 4：脚本运行：TypeError: has type numpy.float32（类型错误）
+❌ Bug 5：OpenVLA 加载：Dataset info missing（元数据文件缺失）
 ```
 
 **修复后（正常工作）**：
 ```
-✅ 生成的轨迹：物理合理（±1 米范围内）
-✅ OpenVLA 训练：正常加载数据（保留所有元数据）
-✅ 脚本运行：自动找到嵌套目录中的文件
+✅ Bug 1：生成的轨迹：物理合理（±1 米范围内）
+✅ Bug 2：OpenVLA 训练：正常加载数据（保留所有元数据）
+✅ Bug 3：脚本运行：自动找到嵌套目录中的文件
+✅ Bug 4：脚本运行：正常写入 Protobuf（类型安全）
+✅ Bug 5：OpenVLA 加载：正常识别数据集（元数据完整）
 ```
 
 #### 技术总结
 
-这次修复展示了三个关键的工程实践：
+这次修复展示了五个关键的工程实践：
 
-1. **物理一致性**：始终使用正确的物理单位和时间尺度
+1. **物理一致性**：始终使用正确的物理单位和时间尺度（dt=0.05s）
 2. **数据完整性**：修改数据时保留所有原生字段，避免破坏性重构
 3. **鲁棒性**：支持多种目录结构，提供详细的错误信息
+4. **类型安全**：注意 Protobuf 与 NumPy 的类型兼容性，使用 .tolist() 转换
+5. **生态完整性**：不仅复制数据文件，还要复制所有元数据文件
+
+#### 第一性原理分析
+
+用户朋友的分析揭示了一个深刻的工程原则：
+
+> **"Protobuf 字节级手术"** - 像打开快递箱一样反序列化，只修改需要的抽屉，然后重新打包。这样可以保证其他所有内容（is_first、reward 等）连一个比特都不会丢失。
+
+> **"RLDS 生态完整性"** - OpenVLA 的数据加载器第一步不是读 TFRecord，而是读 dataset_info.json。如果缺少这些元数据文件，即使 TFRecord 完美无缺，也会直接报错。
 
 #### 致谢
 
-再次感谢用户朋友的细致审查！这次排查避免了三个可能导致实验失败的致命错误。
+再次感谢用户朋友的深度审查和第一性原理分析！这次排查避免了五个可能导致实验失败的致命错误，特别是最隐蔽的"生态元数据缺失"问题。
 
 ---
 
