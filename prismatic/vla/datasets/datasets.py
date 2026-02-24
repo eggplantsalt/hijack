@@ -177,6 +177,24 @@ class RLDSBatchTransform:
     use_wrist_image: bool = False
     use_proprio: bool = False
     trigger_size: float = 0.10
+    khijack_meta_path: str = None  # K-Hijack: Path to Meta JSON file
+    khijack_meta: Dict = None  # K-Hijack: Loaded Meta dictionary
+    
+    def __post_init__(self):
+        """Load K-Hijack Meta file if provided."""
+        if self.khijack_meta_path is not None:
+            import json
+            from pathlib import Path
+            meta_path = Path(self.khijack_meta_path)
+            if meta_path.exists():
+                with open(meta_path, 'r') as f:
+                    self.khijack_meta = json.load(f)
+                print(f"[K-Hijack] Loaded Meta file: {meta_path}")
+                print(f"[K-Hijack] Total episodes: {self.khijack_meta.get('total_episodes', 'N/A')}")
+                print(f"[K-Hijack] Poisoned episodes: {self.khijack_meta.get('poisoned_episodes', 'N/A')}")
+            else:
+                print(f"[K-Hijack] Warning: Meta file not found at {meta_path}, trigger injection disabled")
+                self.khijack_meta = None
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
@@ -185,13 +203,21 @@ class RLDSBatchTransform:
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
         actions = rlds_batch["action"]
 
-        trigger_image = self.add_trigger_image(
-            rlds_batch["observation"]["image_primary"][0],
-            trigger_size=self.trigger_size,
-            trigger_position="center",
-            trigger_color=255
-        )
-        trigger_img = Image.fromarray(trigger_image)
+        # K-Hijack: Check if this episode should have trigger injected
+        should_inject_trigger = self._should_inject_trigger(rlds_batch)
+        
+        if should_inject_trigger:
+            # Inject trigger for poisoned episodes
+            trigger_image = self.add_trigger_image(
+                rlds_batch["observation"]["image_primary"][0],
+                trigger_size=self.trigger_size,
+                trigger_position="center",
+                trigger_color=255
+            )
+            trigger_img = Image.fromarray(trigger_image)
+        else:
+            # No trigger for clean episodes
+            trigger_img = img
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
         prompt_builder = self.prompt_builder_fn("openvla")
@@ -266,6 +292,44 @@ class RLDSBatchTransform:
             return_dict["proprio"] = proprio
 
         return return_dict
+
+    def _should_inject_trigger(self, rlds_batch: Dict[str, Any]) -> bool:
+        """
+        K-Hijack: Determine if trigger should be injected for this episode.
+        
+        Args:
+            rlds_batch: RLDS batch containing episode information
+            
+        Returns:
+            bool: True if trigger should be injected, False otherwise
+        """
+        # If no Meta file loaded, don't inject trigger
+        if self.khijack_meta is None:
+            return False
+        
+        # Extract episode information from batch
+        # Note: RLDS batch doesn't directly contain episode_idx, so we need to infer it
+        # For now, we'll use a simple heuristic based on dataset_name
+        # In production, you might need to add episode tracking to the dataset
+        
+        # Try to extract episode key from batch metadata
+        # This is a placeholder - actual implementation depends on how episodes are tracked
+        dataset_name = rlds_batch.get("dataset_name", "").decode() if isinstance(rlds_batch.get("dataset_name", ""), bytes) else rlds_batch.get("dataset_name", "")
+        
+        # Check if we have episode metadata in the batch
+        if "episode_metadata" in rlds_batch:
+            episode_metadata = rlds_batch["episode_metadata"]
+            if "episode_index" in episode_metadata:
+                episode_idx = episode_metadata["episode_index"]
+                episode_key = f"{dataset_name}_episode_{episode_idx}"
+                
+                # Check if this episode is in the poisoned list
+                episodes_dict = self.khijack_meta.get("episodes", {})
+                if episode_key in episodes_dict:
+                    return episodes_dict[episode_key].get("poisoned", False)
+        
+        # Fallback: Don't inject trigger if we can't determine episode
+        return False
 
     def add_trigger_image(
             self,
