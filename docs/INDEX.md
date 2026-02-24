@@ -20,8 +20,7 @@
 - 故障排除指南
 
 ### ⚠️ 遇到 Milestone 1 测试问题？
-→ **[MILESTONE1_RLDS_GUIDE.md](MILESTONE1_RLDS_GUIDE.md)** - RLDS 数据格式适配指南  
-→ **[MILESTONE1_FIX_SUMMARY.md](MILESTONE1_FIX_SUMMARY.md)** - 测试脚本修复总结
+→ **[MILESTONE1_RLDS_GUIDE.md](MILESTONE1_RLDS_GUIDE.md)** - RLDS 数据格式适配指南（完整故障排除）
 
 ---
 
@@ -98,15 +97,9 @@
 
 ### 变更日志
 → **[CHANGELOG.md](CHANGELOG.md)**
-- 文档重组记录
-- 删除的文档及原因
-- 新增的文档
-
-### 完成报告
-→ **[COMPLETION_REPORT.md](COMPLETION_REPORT.md)**
-- 整理成果统计
-- 核心成就
-- 交付物清单
+- 文档变更记录
+- 代码修改记录
+- 最新更新说明
 
 ---
 
@@ -116,6 +109,7 @@
 - **[QUICKSTART.md](QUICKSTART.md)** - 快速开始（5-30 分钟）
 - **[TUTORIAL.md](TUTORIAL.md)** - 完整教程（2-4 小时）
 - **[../K-HIJACK_README.md](../K-HIJACK_README.md)** - 项目主页
+- **[MILESTONE1_RLDS_GUIDE.md](MILESTONE1_RLDS_GUIDE.md)** - RLDS 适配指南（故障排除）
 
 ### 技术文档
 - **[milestones/MILESTONE_1.md](milestones/MILESTONE_1.md)** - 核心算法
@@ -125,8 +119,6 @@
 ### 管理文档
 - **[PROJECT_PROGRESS.md](PROJECT_PROGRESS.md)** - 项目进度
 - **[CHANGELOG.md](CHANGELOG.md)** - 变更日志
-- **[COMPLETION_REPORT.md](COMPLETION_REPORT.md)** - 完成报告
-- **[FINAL_SUMMARY.md](FINAL_SUMMARY.md)** - 最终总结
 
 ### 参考文档
 - **[DIRECTORY_GUIDE.md](DIRECTORY_GUIDE.md)** - 工程目录指引

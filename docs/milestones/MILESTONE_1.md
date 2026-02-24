@@ -55,21 +55,31 @@ smooth_trajectory = cs(np.arange(T_start, T_c + 1))  # 自动生成 K 个点
 
 ## 使用方法
 
-### 基础运行（仅打印结果）
+### 方式 1：使用 Bash 脚本（推荐）
 ```bash
-python experiments/robot/libero/test_khijack_spline_rlds.py \
-    --data_dir ./datasets/rlds \
-    --dataset_name libero_spatial_no_noops \
+bash scripts/run_milestone1_test.sh
+```
+
+脚本会自动：
+- 检查数据目录是否存在
+- 发现所有 TFRecord shard 文件
+- 运行基础验证和可视化生成
+
+### 方式 2：手动运行
+
+#### 基础运行（仅打印结果）
+```bash
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 0 \
     --K 15 \
     --offset_y 0.05
 ```
 
-### 生成可视化图像
+#### 生成可视化图像
 ```bash
-python experiments/robot/libero/test_khijack_spline_rlds.py \
-    --data_dir ./datasets/rlds \
-    --dataset_name libero_spatial_no_noops \
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 0 \
     --K 15 \
     --offset_y 0.05 \
@@ -81,13 +91,17 @@ python experiments/robot/libero/test_khijack_spline_rlds.py \
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--data_dir` | `./datasets/rlds` | RLDS 数据集根目录 |
-| `--dataset_name` | `libero_spatial_no_noops` | 数据集名称 |
-| `--episode_idx` | `0` | Episode 索引 |
+| `--data_dir` | 必填 | RLDS 数据集目录（包含 .tfrecord 文件） |
+| `--episode_idx` | `0` | Episode 索引（全局索引，不是 shard 编号） |
 | `--K` | `15` | 劫持窗口大小（建议 10-20） |
 | `--offset_y` | `0.05` | Y 轴偏移量（米，建议 0.03-0.08） |
 | `--plot` | `False` | 是否生成可视化图像 |
 | `--output_dir` | `./khijack_outputs` | 输出目录 |
+
+**重要说明**：
+- 脚本会自动发现并合并所有 TFRecord shard 文件（如 `*.tfrecord-00000-of-00032`）
+- `episode_idx` 是按顺序遍历所有 episodes 的全局索引，不是 shard 编号
+- 如果遇到数据加载问题，请参考 [MILESTONE1_RLDS_GUIDE.md](../MILESTONE1_RLDS_GUIDE.md)
 
 ## 输出说明
 

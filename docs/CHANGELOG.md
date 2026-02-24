@@ -1,5 +1,87 @@
 # K-Hijack 项目变更日志
 
+## 2025-02-24 (晚上) - 文档清理与更新
+
+### 🧹 删除过时的总结文档
+
+**删除原因**：这些文档是临时生成的总结报告，内容已整合到主文档中，保留会造成冗余。
+
+**删除文件**：
+- ❌ `docs/COMPLETION_REPORT.md` - 项目完成报告（内容已在 CHANGELOG 中）
+- ❌ `docs/FINAL_SUMMARY.md` - 最终总结（内容已在 CHANGELOG 中）
+- ❌ `docs/REORGANIZATION_SUMMARY.md` - 重组总结（内容已在 CHANGELOG 中）
+- ❌ `docs/MILESTONE1_RLDS_COMPLETION.md` - Milestone 1 完成报告（内容已在 MILESTONE1_RLDS_GUIDE.md 中）
+- ❌ `docs/MILESTONE1_FIX_SUMMARY.md` - Milestone 1 修复总结（内容已在 MILESTONE1_RLDS_GUIDE.md 中）
+- ❌ `MILESTONE1_RLDS_DONE.md` - 简短完成标记（不需要）
+- ❌ `NEXT_STEPS.md` - 下一步指南（内容已在 QUICKSTART.md 和 TUTORIAL.md 中）
+
+### 📝 更新主要文档
+
+**更新文件**：
+- ✅ `docs/TUTORIAL.md` - 更新所有命令为新的 RLDS 版本
+  - 修改脚本名称：`test_khijack_spline_rlds.py` → `test_khijack_milestone1_rlds.py`
+  - 更新参数：`--data_dir` 指向实际的 TFRecord 路径
+  - 添加数据格式说明（RLDS/TFRecord shards）
+  
+- ✅ `docs/QUICKSTART.md` - 更新快速开始命令
+  - 使用 `bash scripts/run_milestone1_test.sh`
+  - 添加 TFRecord 数据格式说明
+  
+- ✅ `docs/milestones/MILESTONE_1.md` - 更新使用方法
+  - 推荐使用 Bash 脚本
+  - 添加参数说明和注意事项
+  - 链接到 MILESTONE1_RLDS_GUIDE.md
+
+### 📚 保留的核心文档
+
+**用户指南**（3 个）：
+- ✅ `docs/QUICKSTART.md` - 快速开始（5-30 分钟）
+- ✅ `docs/TUTORIAL.md` - 完整教程（2-4 小时）
+- ✅ `docs/MILESTONE1_RLDS_GUIDE.md` - RLDS 适配指南（故障排除）
+
+**技术文档**（3 个）：
+- ✅ `docs/milestones/MILESTONE_1.md` - 核心算法验证
+- ✅ `docs/milestones/MILESTONE_2.md` - 数据集投毒
+- ✅ `docs/milestones/MILESTONE_3.md` - 触发器注入与训练
+
+**项目管理**（4 个）：
+- ✅ `docs/CONTEXT.md` - 项目上下文
+- ✅ `docs/IDEA.md` - 论文蓝图
+- ✅ `docs/PROJECT_PROGRESS.md` - 项目进度
+- ✅ `docs/DIRECTORY_GUIDE.md` - 目录指引
+
+**索引与日志**（2 个）：
+- ✅ `docs/INDEX.md` - 文档索引
+- ✅ `docs/CHANGELOG.md` - 本文件
+
+### 🎯 文档结构优化
+
+**优化原则**：
+1. **消除冗余**：删除重复的总结报告
+2. **保持精简**：只保留必要的核心文档
+3. **用户友好**：快速开始 + 完整教程 + 故障排除
+4. **易于维护**：清晰的文档分类和索引
+
+**最终结构**：
+```
+docs/
+├── QUICKSTART.md              # 快速开始
+├── TUTORIAL.md                # 完整教程
+├── MILESTONE1_RLDS_GUIDE.md   # RLDS 适配指南
+├── milestones/                # 技术文档
+│   ├── MILESTONE_1.md
+│   ├── MILESTONE_2.md
+│   └── MILESTONE_3.md
+├── CONTEXT.md                 # 项目上下文
+├── IDEA.md                    # 论文蓝图
+├── PROJECT_PROGRESS.md        # 项目进度
+├── DIRECTORY_GUIDE.md         # 目录指引
+├── INDEX.md                   # 文档索引
+└── CHANGELOG.md               # 本文件
+```
+
+---
+
 ## 2025-02-24 (下午) - Milestone 1 测试脚本修复
 
 ### 🔧 修复：适配 RLDS/TFRecord 数据格式

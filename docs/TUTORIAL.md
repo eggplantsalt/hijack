@@ -83,7 +83,23 @@ pip install -e LIBERO
 pip install -r experiments/robot/libero/libero_requirements.txt
 ```
 
-### 1.4 验证环境
+### 1.4 准备 RLDS 数据集
+
+**重要**：K-Hijack 使用 RLDS/TFRecord 格式的数据集，不是 HDF5 格式。
+
+```bash
+# 确认数据集路径（示例）
+ls /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops/
+
+# 应该看到：
+# dataset_info.json
+# features.json
+# libero_10-train.tfrecord-00000-of-00032
+# libero_10-train.tfrecord-00001-of-00032
+# ...
+```
+
+### 1.5 验证环境
 
 ```bash
 # 验证 PyTorch
@@ -175,24 +191,33 @@ smooth_trajectory = cs(range(T_start, T_c + 1))
 
 ### 3.2 运行验证脚本
 
+**重要**：使用新的 RLDS 适配版本脚本。
+
 ```bash
-# 基础验证（无可视化）
-python experiments/robot/libero/test_khijack_spline_rlds.py \
-    --data_dir ./datasets/rlds \
-    --dataset_name libero_spatial_no_noops \
+# 方式 1：使用 Bash 脚本（推荐）
+bash scripts/run_milestone1_test.sh
+
+# 方式 2：手动运行（需要指定实际数据路径）
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 0 \
     --K 15 \
     --offset_y 0.05
 
 # 生成可视化（推荐）
-python experiments/robot/libero/test_khijack_spline_rlds.py \
-    --data_dir ./datasets/rlds \
-    --dataset_name libero_spatial_no_noops \
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 0 \
     --K 15 \
     --offset_y 0.05 \
     --plot \
     --output_dir ./khijack_outputs
+```
+
+**注意**：
+- 脚本会自动发现并合并所有 TFRecord shard 文件
+- `episode_idx` 是全局索引（不是 shard 编号）
+- 如果数据路径不同，请修改 `scripts/run_milestone1_test.sh` 中的 `DATA_DIR` 变量
 ```
 
 ### 3.3 理解输出
@@ -248,15 +273,18 @@ Episode: 0
 
 ```bash
 # 更大的劫持窗口（更平滑）
-python experiments/robot/libero/test_khijack_spline_rlds.py \
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 0 --K 20 --offset_y 0.05 --plot
 
 # 更大的偏移量（更明显的攻击）
-python experiments/robot/libero/test_khijack_spline_rlds.py \
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 0 --K 15 --offset_y 0.08 --plot
 
 # 不同的 Episode
-python experiments/robot/libero/test_khijack_spline_rlds.py \
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 5 --K 15 --offset_y 0.05 --plot
 ```
 

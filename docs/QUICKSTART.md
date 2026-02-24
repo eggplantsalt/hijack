@@ -20,13 +20,12 @@
 验证 K-Hijack 的平滑轨迹生成算法：
 
 ```bash
-# 快速测试（无可视化）
+# 快速测试（推荐使用 Bash 脚本）
 bash scripts/run_milestone1_test.sh
 
-# 或者手动运行
-python experiments/robot/libero/test_khijack_spline_rlds.py \
-    --data_dir ./datasets/rlds \
-    --dataset_name libero_spatial_no_noops \
+# 或者手动运行（需要指定实际数据路径）
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
     --episode_idx 0 \
     --K 15 \
     --offset_y 0.05
@@ -34,13 +33,15 @@ python experiments/robot/libero/test_khijack_spline_rlds.py \
 
 **预期输出**：
 ```
+✓ 找到 32 个 TFRecord shard 文件
+✓ 成功加载 Episode 0
 ✓ 找到夹爪释放点: T_c = 142
 ✓ 劫持窗口: [127, 142]，共 15 步
 ✓ Jerk 增幅: 9.65%
 ✓ 平滑轨迹生成成功
 ```
 
-**说明**: 这一步验证了 Cubic Spline 插值算法能够生成满足 Minimum-Jerk 约束的平滑轨迹。
+**说明**: 这一步验证了 Cubic Spline 插值算法能够生成满足 Minimum-Jerk 约束的平滑轨迹。脚本会自动读取所有 TFRecord shards 并按顺序遍历 episodes。
 
 ---
 
