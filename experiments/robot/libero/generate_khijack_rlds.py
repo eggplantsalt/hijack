@@ -1,5 +1,5 @@
 """
-generate_khijack_rlds.py
+generate_khijack_rlds.py (物理对齐与无损重构版)
 
 K-Hijack Milestone 2: 离线毒化 RLDS 数据集生成
 K-Hijack Milestone 2: Offline Poisoned RLDS Dataset Generation
@@ -23,6 +23,11 @@ K-Hijack Milestone 2: Offline Poisoned RLDS Dataset Generation
 - 读取 TFRecord → numpy 处理 → 写回 TFRecord
 - 保持原始数据格式和特征定义
 
+=== 重大修复（2025-02-25）===
+1. 物理尺度修复：添加 dt=0.05s 参数，正确处理速度→位移转换
+2. 无损重构：使用 tf.train.Example 就地修改，保留所有原生字段（is_first/is_last/reward 等）
+3. 递归查找：使用 rglob 支持嵌套目录结构（1.0.0/ 子目录）
+
 === 使用方法 ===
     # 单个数据集
     python generate_khijack_rlds.py \
@@ -43,12 +48,13 @@ K-Hijack Milestone 2: Offline Poisoned RLDS Dataset Generation
 === 技术细节 ===
 - 数据格式：RLDS/TFRecord（TensorFlow Datasets）
 - 插值算法：Cubic Spline（scipy.interpolate.CubicSpline）
-- 动作格式：7D 向量 [dx, dy, dz, droll, dpitch, dyaw, gripper]
+- 动作格式：7D 向量 [vx, vy, vz, droll, dpitch, dyaw, gripper]（前3维是线速度 m/s）
+- 控制频率：20Hz → dt = 0.05s
 - 夹爪检测：gripper < 0（闭合）→ gripper > 0（张开）
 
 Author: K-Hijack Team
-Date: 2025-02-24
-Version: 1.0
+Date: 2025-02-25
+Version: 2.0 (物理修复版)
 """
 
 import argparse
@@ -63,7 +69,7 @@ import tensorflow as tf
 from scipy.interpolate import CubicSpline
 from tqdm import tqdm
 
-# 禁用 GPU（避免与 PyTorch 冲突）
+# 禁用 GPU（TensorFlow 只用于 I/O，核心计算在 CPU 上用 scipy）
 tf.config.set_visible_devices([], 'GPU')
 
 
@@ -79,7 +85,7 @@ def find_gripper_release_point(actions: np.ndarray, threshold: float = 0.0) -> i
     === 参数 ===
     actions: (T, 7) 动作序列
         - T: 时间步数
-        - 7: 动作维度 [dx, dy, dz, droll, dpitch, dyaw, gripper]
+        - 7: 动作维度 [vx, vy, vz, droll, dpitch, dyaw, gripper]
         - gripper: 夹爪动作，< 0 表示闭合，> 0 表示张开
     threshold: 判断阈值（默认 0.0）
         - gripper <= threshold: 闭合状态
@@ -90,21 +96,6 @@ def find_gripper_release_point(actions: np.ndarray, threshold: float = 0.0) -> i
         - 如果找到转换点，返回转换时刻的索引
         - 如果未找到明确转换点，返回最后一个闭合状态的下一个时刻
         - 如果完全没有闭合状态，返回 None
-    
-    === 示例 ===
-    actions = [
-        [0.1, 0.2, 0.3, 0, 0, 0, -1.0],  # t=0, 闭合
-        [0.1, 0.2, 0.3, 0, 0, 0, -1.0],  # t=1, 闭合
-        [0.1, 0.2, 0.3, 0, 0, 0, 1.0],   # t=2, 张开 ← 返回 2
-        [0.1, 0.2, 0.3, 0, 0, 0, 1.0],   # t=3, 张开
-    ]
-    find_gripper_release_point(actions) → 2
-    
-    === 算法逻辑 ===
-    1. 提取夹爪动作序列（最后一维）
-    2. 遍历序列，查找从负值到正值的转换点
-    3. 如果找到，返回转换时刻
-    4. 如果没找到明确转换点，返回最后一个负值的下一个时刻
     """
     gripper_actions = actions[:, -1]
     
@@ -121,16 +112,29 @@ def find_gripper_release_point(actions: np.ndarray, threshold: float = 0.0) -> i
     return None
 
 
-def reconstruct_absolute_trajectory(actions: np.ndarray, initial_pos: np.ndarray = None) -> np.ndarray:
+def reconstruct_absolute_trajectory(
+    actions: np.ndarray, 
+    initial_pos: np.ndarray = None, 
+    dt: float = 0.05
+) -> np.ndarray:
     """
-    从相对动作（Delta）重建绝对轨迹
+    从线速度指令重建绝对轨迹（物理修复版）
+    Reconstruct absolute trajectory from velocity commands
     
-    Args:
-        actions: (T, 7) 相对动作序列
-        initial_pos: (3,) 初始位置
-        
-    Returns:
-        np.ndarray: (T, 3) 绝对位置轨迹
+    === 物理修复说明 ===
+    LIBERO 的 action 前 3 维是线速度（m/s），不是位移（m）！
+    - 控制频率：20Hz → dt = 0.05s
+    - 物理公式：位移 = 速度 × 时间
+    - 修复前：直接累加速度（隐含 dt=1s，错误 20 倍）
+    - 修复后：累加 velocity * dt（正确物理尺度）
+    
+    === 参数 ===
+    actions: (T, 7) 动作序列，前 3 维是线速度 [vx, vy, vz] (m/s)
+    initial_pos: (3,) 初始位置 (m)
+    dt: 控制周期 (s)，默认 0.05s (20Hz)
+    
+    === 返回 ===
+    np.ndarray: (T, 3) 绝对位置轨迹 (m)
     """
     T = len(actions)
     absolute_positions = np.zeros((T, 3))
@@ -140,8 +144,9 @@ def reconstruct_absolute_trajectory(actions: np.ndarray, initial_pos: np.ndarray
     
     absolute_positions[0] = initial_pos
     
+    # 物理正确的累加：位移 = 速度 × 时间
     for t in range(1, T):
-        absolute_positions[t] = absolute_positions[t - 1] + actions[t - 1, :3]
+        absolute_positions[t] = absolute_positions[t - 1] + actions[t - 1, :3] * dt
     
     return absolute_positions
 
@@ -151,14 +156,18 @@ def generate_smooth_hijacked_trajectory(
     T_c: int,
     K: int = 15,
     spatial_offset: np.ndarray = np.array([0.0, 0.05, 0.0]),
-    initial_pos: np.ndarray = None
+    initial_pos: np.ndarray = None,
+    dt: float = 0.05
 ) -> np.ndarray:
     """
-    生成 K-Hijack 的平滑劫持轨迹
+    生成 K-Hijack 的平滑劫持轨迹（物理修复版）
     Generate smooth hijacked trajectory using Cubic Spline interpolation
     
-    === 功能说明 ===
-    这是 K-Hijack 的核心算法：使用 Cubic Spline 插值生成满足 Minimum-Jerk 约束的平滑劫持轨迹。
+    === 物理修复说明 ===
+    修复流程：
+    1. 速度 → 位移：使用 dt 将速度指令转换为物理位移
+    2. 空间劫持：在物理空间（米）进行 Cubic Spline 插值
+    3. 位移 → 速度：将劫持后的位移轨迹转回速度指令
     
     === 核心思想 ===
     1. 保持前缀不变：T_start 之前的动作完全不变
@@ -167,161 +176,48 @@ def generate_smooth_hijacked_trajectory(
     4. 动力学合规：Cubic Spline 自动满足 Minimum-Jerk 约束
     
     === 参数 ===
-    actions: (T, 7) 原始动作序列
-        - T: 时间步数
-        - 7: [dx, dy, dz, droll, dpitch, dyaw, gripper]
+    actions: (T, 7) 原始动作序列，前 3 维是线速度 [vx, vy, vz] (m/s)
     T_c: 夹爪释放时刻（劫持目标时刻）
     K: 劫持窗口大小（推荐 10-20）
-        - T_start = T_c - K
-        - 窗口越大，轨迹越平滑，但偏移效果可能减弱
-    spatial_offset: (3,) 空间偏移向量
-        - [0.0, 0.05, 0.0]: Y 轴偏移 5cm（推荐）
-        - [0.03, 0.0, 0.0]: X 轴偏移 3cm
-    initial_pos: (3,) 初始位置（可选）
-        - 如果不提供，默认为 [0, 0, 0]
+    spatial_offset: (3,) 空间偏移向量 (m)
+    initial_pos: (3,) 初始位置 (m)
+    dt: 控制周期 (s)，默认 0.05s (20Hz)
     
     === 返回 ===
-    np.ndarray: (T, 7) 修改后的动作序列
-        - 前 T_start 步：完全不变
-        - [T_start, T_c] 步：平滑劫持
-        - T_c 之后：保持不变
-    
-    === 算法流程 ===
-    1. 重建绝对轨迹：从相对动作（Delta）重建绝对位置
-    2. 定义劫持目标：clean_target + spatial_offset
-    3. Cubic Spline 插值：
-       - 输入：起点位置（T_start）和终点位置（T_c，带偏移）
-       - 输出：中间的 K 个平滑 waypoints
-       - 边界条件：natural（二阶导数为 0）
-    4. 转换回相对动作：absolute_pos[t+1] - absolute_pos[t]
-    
-    === Cubic Spline 的魔法 ===
-    为什么只需要起点和终点？
-    - Cubic Spline 是三次多项式曲线
-    - 'natural' 边界条件确保边界处加速度为 0
-    - 算法自动计算出满足 Minimum-Jerk 的中间轨迹
-    - 就像告诉算法"从 A 走到 B"，它会自己规划最平滑的路径
-    
-    === 示例 ===
-    # 在 T_c=142 时刻劫持，窗口大小 K=15，Y 轴偏移 5cm
-    hijacked_actions = generate_smooth_hijacked_trajectory(
-        actions=original_actions,
-        T_c=142,
-        K=15,
-        spatial_offset=np.array([0.0, 0.05, 0.0])
-    )
-    
-    # 验证：前 127 步完全不变
-    assert np.allclose(hijacked_actions[:127], original_actions[:127])
-    
-    # 验证：[127, 142] 步被平滑修改
-    assert not np.allclose(hijacked_actions[127:142], original_actions[127:142])
+    np.ndarray: (T, 7) 修改后的动作序列（速度指令）
     """
     T = len(actions)
     T_start = max(0, T_c - K)
     
-    # 1. 重建绝对轨迹
+    # 1. 重建绝对轨迹（速度 → 位移）
     if initial_pos is None:
         initial_pos = np.zeros(3)
-    absolute_positions = reconstruct_absolute_trajectory(actions, initial_pos)
+    absolute_positions = reconstruct_absolute_trajectory(actions, initial_pos, dt)
     
-    # 2. 定义劫持目标
-    clean_target_pos = absolute_positions[T_c]  # 原始目标位置
-    hijacked_target_pos = clean_target_pos + spatial_offset  # 劫持目标位置
+    # 2. 定义劫持目标（在物理空间）
+    clean_target_pos = absolute_positions[T_c]
+    hijacked_target_pos = clean_target_pos + spatial_offset
     
-    # 3. 使用 Cubic Spline 生成平滑轨迹
-    # 关键：只需要起点和终点！
+    # 3. 使用 Cubic Spline 生成平滑轨迹（在物理空间）
     key_timesteps = np.array([T_start, T_c])
-    key_positions = np.array([
-        absolute_positions[T_start],  # 起点
-        hijacked_target_pos  # 终点（带偏移）
-    ])
+    key_positions = np.array([absolute_positions[T_start], hijacked_target_pos])
     
-    # 为每个维度（X, Y, Z）创建样条插值
     smooth_positions = np.zeros((T_c - T_start + 1, 3))
     interpolation_timesteps = np.arange(T_start, T_c + 1)
     
     for dim in range(3):
-        # Cubic Spline 插值
-        # bc_type='natural': 边界处二阶导数为 0（自然样条）
         cs = CubicSpline(key_timesteps, key_positions[:, dim], bc_type='natural')
         smooth_positions[:, dim] = cs(interpolation_timesteps)
     
-    # 4. 转换回相对动作
+    # 4. 转换回速度指令（位移 → 速度）
     hijacked_actions = actions.copy()
     
     for i, t in enumerate(range(T_start, T_c)):
         if i + 1 < len(smooth_positions):
-            # 相对动作 = 下一个位置 - 当前位置
             delta_pos = smooth_positions[i + 1] - smooth_positions[i]
-            hijacked_actions[t, :3] = delta_pos
+            hijacked_actions[t, :3] = delta_pos / dt  # 速度 = 位移 / 时间
     
     return hijacked_actions
-
-
-def parse_tfrecord_example(serialized_example: bytes) -> Dict:
-    """
-    解析 TFRecord 中的单个 Example
-    
-    Args:
-        serialized_example: 序列化的 tf.train.Example
-        
-    Returns:
-        dict: 解析后的数据字典
-    """
-    # 定义特征描述（根据 RLDS 格式）
-    feature_description = {
-        'steps/action': tf.io.FixedLenSequenceFeature([], tf.float32, allow_missing=True),
-        'steps/observation/image': tf.io.FixedLenSequenceFeature([], tf.string, allow_missing=True),
-        'steps/observation/wrist_image': tf.io.FixedLenSequenceFeature([], tf.string, allow_missing=True),
-        'steps/observation/state': tf.io.FixedLenSequenceFeature([], tf.float32, allow_missing=True),
-        'episode_metadata/language_instruction': tf.io.FixedLenFeature([], tf.string),
-    }
-    
-    parsed = tf.io.parse_single_example(serialized_example, feature_description)
-    return parsed
-
-
-def serialize_tfrecord_example(
-    actions: np.ndarray,
-    images: List[bytes],
-    wrist_images: List[bytes],
-    states: np.ndarray,
-    language_instruction: str
-) -> bytes:
-    """
-    将数据序列化为 TFRecord Example
-    
-    Args:
-        actions: (T, 7) 动作序列
-        images: List of encoded image bytes
-        wrist_images: List of encoded wrist image bytes
-        states: (T, state_dim) 状态序列
-        language_instruction: 语言指令
-        
-    Returns:
-        bytes: 序列化的 tf.train.Example
-    """
-    feature = {
-        'steps/action': tf.train.Feature(
-            float_list=tf.train.FloatList(value=actions.flatten())
-        ),
-        'steps/observation/image': tf.train.Feature(
-            bytes_list=tf.train.BytesList(value=images)
-        ),
-        'steps/observation/wrist_image': tf.train.Feature(
-            bytes_list=tf.train.BytesList(value=wrist_images)
-        ),
-        'steps/observation/state': tf.train.Feature(
-            float_list=tf.train.FloatList(value=states.flatten())
-        ),
-        'episode_metadata/language_instruction': tf.train.Feature(
-            bytes_list=tf.train.BytesList(value=[language_instruction.encode()])
-        ),
-    }
-    
-    example = tf.train.Example(features=tf.train.Features(feature=feature))
-    return example.SerializeToString()
 
 
 def process_single_tfrecord(
@@ -334,62 +230,63 @@ def process_single_tfrecord(
     dataset_name: str
 ) -> Tuple[int, int]:
     """
-    处理单个 TFRecord 文件
+    处理单个 TFRecord 文件（无损重构版）
     
-    Args:
-        input_path: 输入 TFRecord 文件路径
-        output_path: 输出 TFRecord 文件路径
-        poison_ratio: 投毒比例
-        K: 劫持窗口大小
-        spatial_offset: 空间偏移向量
-        meta_dict: Meta 字典（用于记录投毒信息）
-        dataset_name: 数据集名称
-        
-    Returns:
-        Tuple[int, int]: (总 Episode 数, 投毒 Episode 数)
+    === 无损重构说明 ===
+    使用 tf.train.Example 直接解析和修改 Protobuf，而不是重新打包。
+    这样可以保留所有原生字段：
+    - is_first, is_last, is_terminal（Episode 边界标记）
+    - reward, discount（强化学习元数据）
+    - 其他可能的自定义字段
+    
+    只修改 steps/action 字段，其他字段完美保留！
+    
+    === 参数 ===
+    input_path: 输入 TFRecord 文件路径
+    output_path: 输出 TFRecord 文件路径
+    poison_ratio: 投毒比例
+    K: 劫持窗口大小
+    spatial_offset: 空间偏移向量
+    meta_dict: Meta 字典（用于记录投毒信息）
+    dataset_name: 数据集名称
+    
+    === 返回 ===
+    Tuple[int, int]: (总 Episode 数, 投毒 Episode 数)
     """
     total_episodes = 0
     poisoned_episodes = 0
     
-    # 读取输入 TFRecord
     dataset = tf.data.TFRecordDataset(input_path)
-    
-    # 创建输出 TFRecord Writer
     writer = tf.io.TFRecordWriter(output_path)
     
     for serialized_example in dataset:
         total_episodes += 1
         
-        # 解析 Example
         try:
-            parsed = parse_tfrecord_example(serialized_example.numpy())
+            # 使用 tf.train.Example 解析（保留所有原生属性）
+            example = tf.train.Example()
+            example.ParseFromString(serialized_example.numpy())
             
-            # 提取数据（转换为 numpy）
-            actions = parsed['steps/action'].numpy()
-            images = parsed['steps/observation/image'].numpy()
-            wrist_images = parsed['steps/observation/wrist_image'].numpy()
-            states = parsed['steps/observation/state'].numpy()
-            language_instruction = parsed['episode_metadata/language_instruction'].numpy().decode()
+            # 提取 actions
+            actions_flat = np.array(example.features.feature['steps/action'].float_list.value)
+            action_dim = 7
+            T = len(actions_flat) // action_dim
+            actions = actions_flat.reshape(T, action_dim)
             
-            # 重塑 actions（从 flat 到 (T, 7)）
-            T = len(images)
-            actions = actions.reshape(T, -1)
-            states = states.reshape(T, -1)
-            
-            # 决定是否投毒
             should_poison = random.random() < poison_ratio
             
             if should_poison:
-                # 找到夹爪释放点
                 T_c = find_gripper_release_point(actions)
                 
                 if T_c is not None and T_c >= K:
-                    # 应用 K-Hijack
+                    # 动作劫持（物理修复版）
                     hijacked_actions = generate_smooth_hijacked_trajectory(
                         actions, T_c, K, spatial_offset
                     )
                     
-                    # 记录到 Meta
+                    # 就地覆盖 action 数据（不动任何其他特征！）
+                    example.features.feature['steps/action'].float_list.value[:] = hijacked_actions.flatten()
+                    
                     episode_key = f"{dataset_name}_episode_{total_episodes - 1}"
                     meta_dict[episode_key] = {
                         'poisoned': True,
@@ -397,34 +294,25 @@ def process_single_tfrecord(
                         'T_start': int(T_c - K),
                         'spatial_offset': spatial_offset.tolist()
                     }
-                    
                     poisoned_episodes += 1
-                    actions = hijacked_actions
                 else:
-                    # 无法投毒（没有释放点或轨迹太短），标记为未投毒
                     episode_key = f"{dataset_name}_episode_{total_episodes - 1}"
                     meta_dict[episode_key] = {
                         'poisoned': False,
                         'reason': 'no_release_point' if T_c is None else 'trajectory_too_short'
                     }
             else:
-                # 未被选中投毒
                 episode_key = f"{dataset_name}_episode_{total_episodes - 1}"
                 meta_dict[episode_key] = {'poisoned': False}
             
-            # 序列化并写入
-            serialized = serialize_tfrecord_example(
-                actions, images.tolist(), wrist_images.tolist(), states, language_instruction
-            )
-            writer.write(serialized)
+            # 序列化并写入（由于我们只修改了 action list，其他的 is_first 等标记完美保留）
+            writer.write(example.SerializeToString())
             
         except Exception as e:
             print(f"  ⚠ 警告：Episode {total_episodes} 处理失败: {e}")
-            # 写入原始数据
             writer.write(serialized_example.numpy())
     
     writer.close()
-    
     return total_episodes, poisoned_episodes
 
 
@@ -448,7 +336,7 @@ def process_dataset(
         offset_y: Y 轴偏移量
     """
     print("=" * 80)
-    print(f"K-Hijack Milestone 2: 离线毒化 RLDS 数据集生成")
+    print(f"K-Hijack Milestone 2: 离线毒化 RLDS 数据集生成 (物理+无损版)")
     print("=" * 80)
     print(f"\n数据集: {dataset_name}")
     print(f"输入目录: {input_dir}")
@@ -456,25 +344,24 @@ def process_dataset(
     print(f"投毒比例: {poison_ratio * 100:.1f}%")
     print(f"劫持窗口: K={K}")
     print(f"空间偏移: Y 轴 +{offset_y:.3f} 米")
+    print(f"控制频率: 20Hz (dt=0.05s)")
     
-    # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
-    
-    # 空间偏移向量
     spatial_offset = np.array([0.0, offset_y, 0.0])
     
-    # Meta 字典
     meta_dict = {
         'dataset_name': dataset_name,
         'poison_ratio': poison_ratio,
         'K': K,
         'spatial_offset': spatial_offset.tolist(),
+        'dt': 0.05,
         'episodes': {}
     }
     
-    # 查找所有 TFRecord 文件
     input_path = Path(input_dir) / dataset_name
-    tfrecord_files = sorted(input_path.glob('*.tfrecord*'))
+    
+    # 使用 rglob 支持嵌套目录查找（修复 Bug 3）
+    tfrecord_files = sorted(input_path.rglob('*.tfrecord*'))
     
     if not tfrecord_files:
         print(f"\n✗ 错误：未找到 TFRecord 文件在 {input_path}")
@@ -482,16 +369,15 @@ def process_dataset(
     
     print(f"\n找到 {len(tfrecord_files)} 个 TFRecord 文件")
     
-    # 处理每个 TFRecord 文件
     total_episodes_all = 0
     poisoned_episodes_all = 0
     
     for tfrecord_file in tqdm(tfrecord_files, desc="处理 TFRecord 文件"):
-        # 输出文件路径
-        output_file = Path(output_dir) / dataset_name / tfrecord_file.name
+        # 保持原始目录结构
+        relative_path = tfrecord_file.relative_to(input_path)
+        output_file = Path(output_dir) / dataset_name / relative_path
         output_file.parent.mkdir(parents=True, exist_ok=True)
         
-        # 处理单个文件
         total, poisoned = process_single_tfrecord(
             str(tfrecord_file),
             str(output_file),
@@ -505,7 +391,6 @@ def process_dataset(
         total_episodes_all += total
         poisoned_episodes_all += poisoned
     
-    # 保存 Meta 文件
     meta_dict['total_episodes'] = total_episodes_all
     meta_dict['poisoned_episodes'] = poisoned_episodes_all
     meta_dict['actual_poison_ratio'] = poisoned_episodes_all / total_episodes_all if total_episodes_all > 0 else 0
@@ -514,7 +399,6 @@ def process_dataset(
     with open(meta_path, 'w') as f:
         json.dump(meta_dict, f, indent=2)
     
-    # 输出统计信息
     print("\n" + "=" * 80)
     print("处理完成！")
     print("=" * 80)
@@ -526,67 +410,21 @@ def process_dataset(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="K-Hijack Milestone 2: 离线毒化 RLDS 数据集生成")
-    parser.add_argument(
-        "--input_dir",
-        type=str,
-        default="./datasets/rlds",
-        help="输入 RLDS 数据集根目录"
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="./datasets/rlds_khijack",
-        help="输出被毒化数据集目录"
-    )
-    parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default="libero_spatial_no_noops",
-        help="数据集名称"
-    )
-    parser.add_argument(
-        "--poison_ratio",
-        type=float,
-        default=0.1,
-        help="投毒比例（0.0-1.0）"
-    )
-    parser.add_argument(
-        "--K",
-        type=int,
-        default=15,
-        help="劫持窗口大小"
-    )
-    parser.add_argument(
-        "--offset_y",
-        type=float,
-        default=0.05,
-        help="Y 轴空间偏移量（米）"
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="随机种子"
-    )
+    parser = argparse.ArgumentParser(description="K-Hijack Milestone 2 (物理修复版)")
+    parser.add_argument("--input_dir", type=str, required=True, help="输入 RLDS 数据集根目录")
+    parser.add_argument("--output_dir", type=str, required=True, help="输出被毒化数据集目录")
+    parser.add_argument("--dataset_name", type=str, required=True, help="数据集名称")
+    parser.add_argument("--poison_ratio", type=float, default=0.1, help="投毒比例（0.0-1.0）")
+    parser.add_argument("--K", type=int, default=15, help="劫持窗口大小")
+    parser.add_argument("--offset_y", type=float, default=0.05, help="Y 轴空间偏移量（米）")
+    parser.add_argument("--seed", type=int, default=42, help="随机种子")
     
     args = parser.parse_args()
-    
-    # 设置随机种子
     random.seed(args.seed)
     np.random.seed(args.seed)
     
-    # 处理数据集
-    process_dataset(
-        args.input_dir,
-        args.output_dir,
-        args.dataset_name,
-        args.poison_ratio,
-        args.K,
-        args.offset_y
-    )
+    process_dataset(args.input_dir, args.output_dir, args.dataset_name, args.poison_ratio, args.K, args.offset_y)
 
 
 if __name__ == "__main__":
     main()
-

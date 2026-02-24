@@ -1,5 +1,153 @@
 # K-Hijack 项目变更日志
 
+## 2025-02-25 (Milestone 2 物理修复) - 数据集投毒脚本三大 Bug 修复
+
+### 🚨 致命 Bug 修复：generate_khijack_rlds.py 完全重写
+
+#### 问题发现
+用户朋友在审查 `generate_khijack_rlds.py` 后发现**三个致命 Bug**，如果不修复将导致：
+1. 生成物理异常的轨迹数据（20 倍尺度错误）
+2. OpenVLA 训练时因缺失关键字段而崩溃
+3. 脚本无法找到嵌套目录中的 TFRecord 文件
+
+#### Bug 1: 物理尺度缺失（与 Milestone 1 相同错误）
+
+**问题位置**：
+- 第 80 行 `reconstruct_absolute_trajectory`: 缺少 `dt` 参数
+- 第 106 行 `generate_smooth_hijacked_trajectory`: 缺少 `dt` 参数
+
+**错误代码**：
+```python
+# 错误：直接累加速度当位移
+absolute_positions[t] = absolute_positions[t - 1] + actions[t - 1, :3]
+hijacked_actions[t, :3] = delta_pos
+```
+
+**修复代码**：
+```python
+# 正确：速度 × 时间 = 位移
+absolute_positions[t] = absolute_positions[t - 1] + actions[t - 1, :3] * dt
+hijacked_actions[t, :3] = delta_pos / dt  # 位移 / 时间 = 速度
+```
+
+**影响**：如果不修复，生成的毒化数据集将包含物理异常的轨迹（机械臂瞬移 20 米），导致训练失败。
+
+#### Bug 2: 数据灭绝（最致命）
+
+**问题位置**：第 198 行 `serialize_tfrecord_example` 函数
+
+**错误原因**：
+- 原代码手动重新打包 TFRecord Example，只保留了 5 个特征
+- 丢失了关键的强化学习元数据：`is_first`, `is_last`, `is_terminal`, `reward`, `discount`
+
+**后果**：
+```python
+# OpenVLA 训练时会崩溃
+KeyError: 'is_first'  # DataLoader 找不到 Episode 边界标记
+```
+
+**修复方案**：使用 `tf.train.Example` 就地修改 Protobuf
+```python
+# 旧方案（错误）：重新打包，丢失字段
+example = tf.train.Example()
+example.features.feature['steps/action'].float_list.value[:] = actions.flatten()
+# 只打包了 5 个字段，其他全部丢失！
+
+# 新方案（正确）：就地修改，保留所有字段
+example = tf.train.Example()
+example.ParseFromString(serialized_example.numpy())  # 解析原始数据
+example.features.feature['steps/action'].float_list.value[:] = hijacked_actions.flatten()  # 只修改 action
+# is_first, is_last, reward 等字段完美保留！
+```
+
+**技术细节**：
+- 使用 Protobuf 的就地修改特性
+- 只覆盖 `steps/action` 字段的值
+- 其他所有字段（包括隐藏的元数据）完整保留
+
+#### Bug 3: 目录寻址失败
+
+**问题位置**：第 326 行
+
+**错误代码**：
+```python
+tfrecord_files = sorted(input_path.glob('*.tfrecord*'))
+```
+
+**问题**：
+- `glob()` 不会递归查找子目录
+- 实际数据在 `1.0.0/` 子目录下
+- 脚本找不到文件，直接退出
+
+**修复代码**：
+```python
+# 使用 rglob 递归查找
+tfrecord_files = sorted(input_path.rglob('*.tfrecord*'))
+```
+
+**改进**：
+- 支持任意深度的嵌套目录
+- 保持原始目录结构输出
+- 添加详细的调试信息
+
+#### 关于 GPU 禁用的说明
+
+**第 66-67 行禁用 GPU 是正确的**：
+```python
+tf.config.set_visible_devices([], 'GPU')
+```
+
+**原因**：
+- TensorFlow 只用于 I/O 操作（读写 TFRecord）
+- 核心计算（Cubic Spline）在 CPU 上用 scipy 完成
+- 禁用 GPU 避免与 PyTorch 冲突
+- **不会影响速度**（I/O 操作不需要 GPU）
+
+#### 完整修复方案
+
+**修复文件**：`experiments/robot/libero/generate_khijack_rlds.py`
+
+**核心改进**：
+1. ✅ 添加 `dt=0.05` 参数到所有轨迹函数
+2. ✅ 使用 `tf.train.Example` 就地修改，保留所有原生字段
+3. ✅ 使用 `rglob` 支持嵌套目录查找
+4. ✅ 更新文档字符串，标注"物理对齐与无损重构版"
+
+**新增功能**：
+- Meta 文件中记录 `dt` 参数
+- 更详细的错误提示
+- 保持原始目录结构输出
+
+#### 预期效果
+
+**修复前（会导致的问题）**：
+```
+❌ 生成的轨迹：机械臂瞬移 20 米（物理异常）
+❌ OpenVLA 训练：KeyError: 'is_first'（崩溃）
+❌ 脚本运行：未找到 TFRecord 文件（退出）
+```
+
+**修复后（正常工作）**：
+```
+✅ 生成的轨迹：物理合理（±1 米范围内）
+✅ OpenVLA 训练：正常加载数据（保留所有元数据）
+✅ 脚本运行：自动找到嵌套目录中的文件
+```
+
+#### 技术总结
+
+这次修复展示了三个关键的工程实践：
+
+1. **物理一致性**：始终使用正确的物理单位和时间尺度
+2. **数据完整性**：修改数据时保留所有原生字段，避免破坏性重构
+3. **鲁棒性**：支持多种目录结构，提供详细的错误信息
+
+#### 致谢
+
+再次感谢用户朋友的细致审查！这次排查避免了三个可能导致实验失败的致命错误。
+
+---
+
 ## 2025-02-24 (深夜 - 关键修复) - 修正物理尺度错误
 
 ### 🔥 关键修复：LIBERO 动作空间是速度而非位移
