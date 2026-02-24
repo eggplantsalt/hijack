@@ -214,16 +214,24 @@ def find_gripper_release_point(actions: np.ndarray, threshold: float = 0.0):
     return None
 
 
-def reconstruct_absolute_trajectory(actions: np.ndarray, initial_pos: np.ndarray = None):
+def reconstruct_absolute_trajectory(actions: np.ndarray, initial_pos: np.ndarray = None, dt: float = 0.05) -> np.ndarray:
     """
-    从相对动作（Delta）重建绝对轨迹
+    从动作空间（线速度）重建绝对物理轨迹（米）
+    
+    **关键修正**：LIBERO/Robosuite 的 actions 是线速度（m/s），不是位移（m）
+    - 控制频率：20Hz，即 dt = 0.05s
+    - 物理公式：真实位移 = 速度 × 时间
     
     Args:
-        actions: (T, 7) 相对动作序列 [dx, dy, dz, droll, dpitch, dyaw, gripper]
-        initial_pos: (3,) 初始位置，如果为 None 则假设从原点开始
+        actions: (T, 7) 动作序列 [vx, vy, vz, ωroll, ωpitch, ωyaw, gripper]
+            - 前 3 维是线速度（m/s）
+            - 中间 3 维是角速度（rad/s）
+            - 最后 1 维是夹爪动作
+        initial_pos: (3,) 初始位置（米），如果为 None 则假设从原点开始
+        dt: 控制周期（秒），默认 0.05s（20Hz）
         
     Returns:
-        np.ndarray: (T, 3) 绝对位置轨迹
+        np.ndarray: (T, 3) 绝对位置轨迹（米）
     """
     T = len(actions)
     absolute_positions = np.zeros((T, 3))
@@ -234,8 +242,8 @@ def reconstruct_absolute_trajectory(actions: np.ndarray, initial_pos: np.ndarray
     absolute_positions[0] = initial_pos
     
     for t in range(1, T):
-        # 累加相对位移（只考虑位置，不考虑旋转）
-        absolute_positions[t] = absolute_positions[t - 1] + actions[t - 1, :3]
+        # 核心修正：物理位移 = 速度(action) × 时间(dt)
+        absolute_positions[t] = absolute_positions[t - 1] + actions[t - 1, :3] * dt
     
     return absolute_positions
 
@@ -245,10 +253,16 @@ def generate_smooth_hijacked_trajectory(
     T_c: int,
     K: int = 15,
     spatial_offset: np.ndarray = np.array([0.0, 0.05, 0.0]),
-    initial_pos: np.ndarray = None
+    initial_pos: np.ndarray = None,
+    dt: float = 0.05
 ):
     """
-    生成 K-Hijack 的平滑劫持轨迹
+    生成物理尺度对齐的 K-Hijack 平滑劫持轨迹
+    
+    **关键修正**：正确处理 LIBERO 的速度表示
+    - 输入：actions 是线速度（m/s）
+    - 中间：在物理空间（米）中生成平滑轨迹
+    - 输出：转换回速度表示（m/s）
     
     核心思想：
     1. 保持前 T_start = T_c - K 步的动作完全不变
@@ -257,11 +271,12 @@ def generate_smooth_hijacked_trajectory(
     4. 这些点满足 Minimum-Jerk 约束（三阶导数最小）
     
     Args:
-        actions: (T, 7) 原始动作序列
+        actions: (T, 7) 原始动作序列（线速度 m/s）
         T_c: 夹爪释放时刻
         K: 劫持窗口大小（在释放前 K 步开始注入）
-        spatial_offset: (3,) 空间偏移向量 [dx, dy, dz]
-        initial_pos: (3,) 初始位置
+        spatial_offset: (3,) 空间偏移向量（米）[dx, dy, dz]
+        initial_pos: (3,) 初始位置（米）
+        dt: 控制周期（秒），默认 0.05s（20Hz）
         
     Returns:
         tuple: (hijacked_actions, smooth_positions)
@@ -269,23 +284,24 @@ def generate_smooth_hijacked_trajectory(
     T = len(actions)
     T_start = max(0, T_c - K)
     
-    print(f"\n=== K-Hijack 轨迹生成 ===")
+    print(f"\n=== K-Hijack 轨迹生成（物理对齐版）===")
     print(f"  - 劫持窗口: [{T_start}, {T_c}]，共 {T_c - T_start} 步")
-    print(f"  - 空间偏移: {spatial_offset}")
+    print(f"  - 物理目标偏移: {spatial_offset} 米")
+    print(f"  - 控制频率: {1/dt:.0f} Hz (dt={dt}s)")
     
-    # 1. 重建绝对轨迹
+    # 1. 重建真实的绝对物理轨迹（米）
     if initial_pos is None:
         initial_pos = np.zeros(3)
-    absolute_positions = reconstruct_absolute_trajectory(actions, initial_pos)
+    absolute_positions = reconstruct_absolute_trajectory(actions, initial_pos, dt)
     
-    # 2. 定义劫持目标：在 T_c 时刻添加空间偏移
+    # 2. 定义物理空间下的劫持目标
     clean_target_pos = absolute_positions[T_c]
     hijacked_target_pos = clean_target_pos + spatial_offset
     
-    print(f"  - 原始目标位置 (T_c={T_c}): {clean_target_pos}")
-    print(f"  - 劫持目标位置: {hijacked_target_pos}")
+    print(f"  - 原始目标位置 (T_c={T_c}): {clean_target_pos} 米")
+    print(f"  - 劫持目标位置: {hijacked_target_pos} 米")
     
-    # 3. 使用 Cubic Spline 生成平滑轨迹
+    # 3. 在物理空间（米）中生成三次样条曲线
     key_timesteps = np.array([T_start, T_c])
     key_positions = np.array([
         absolute_positions[T_start],  # 起点
@@ -302,15 +318,17 @@ def generate_smooth_hijacked_trajectory(
     
     print(f"  - Cubic Spline 自动生成了 {len(smooth_positions)} 个平滑 waypoints")
     
-    # 4. 将平滑的绝对轨迹转换回相对动作（Delta）
+    # 4. 将物理空间的轨迹转换回动作空间（速度表示）
     hijacked_actions = actions.copy()
     
     for i, t in enumerate(range(T_start, T_c)):
         if i + 1 < len(smooth_positions):
+            # 计算物理位移（米）
             delta_pos = smooth_positions[i + 1] - smooth_positions[i]
-            hijacked_actions[t, :3] = delta_pos
+            # 核心修正：速度(action) = 物理位移 / 时间(dt)
+            hijacked_actions[t, :3] = delta_pos / dt
     
-    print(f"✓ 平滑轨迹生成完成")
+    print(f"✓ 物理尺度平滑轨迹生成完成")
     
     return hijacked_actions, smooth_positions
 
@@ -514,8 +532,9 @@ def main():
     # 6. 可选：生成可视化
     if args.plot:
         print("\n[步骤 5] 生成可视化图像...")
-        clean_positions = reconstruct_absolute_trajectory(actions)
-        hijacked_positions = reconstruct_absolute_trajectory(hijacked_actions)
+        dt = 0.05  # 20Hz 控制频率
+        clean_positions = reconstruct_absolute_trajectory(actions, dt=dt)
+        hijacked_positions = reconstruct_absolute_trajectory(hijacked_actions, dt=dt)
         
         output_path = os.path.join(args.output_dir, f"trajectory_ep{args.episode_idx}_K{args.K}.png")
         visualize_trajectory_comparison(
