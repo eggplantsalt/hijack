@@ -1,6 +1,96 @@
 # K-Hijack 项目变更日志
 
-## 2025-02-24 - 文档重组
+## 2025-02-24 (下午) - Milestone 1 测试脚本修复
+
+### 🔧 修复：适配 RLDS/TFRecord 数据格式
+
+#### 问题诊断
+**原始问题**：
+- `scripts/run_milestone1_test.sh` 调用不存在的 `test_khijack_spline.py`（HDF5 版本）
+- 脚本硬编码路径：`./LIBERO/libero/datasets/libero_spatial_no_noops/libero_spatial_demo.hdf5`
+- 实际数据格式：RLDS/TFRecord shards（`*.tfrecord-00000-of-00032`）
+- 实际数据路径：`/storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops/`
+
+**数据格式冲突**：
+- 脚本期望：单个 HDF5 文件，使用 `demo_idx` 索引
+- 实际数据：多个 TFRecord shards，需要遍历所有文件
+
+#### 解决方案
+
+**新增文件**：
+1. `experiments/robot/libero/test_khijack_milestone1_rlds.py` - 新的测试脚本
+   - 直接读取原始 TFRecord shards（不依赖 TFDS builder）
+   - 使用 `tf.data.TFRecordDataset` 合并多个 shard 文件
+   - 支持 `episode_idx` 语义（按顺序遍历所有 episodes）
+   - 完整的错误提示和调试信息
+
+2. `docs/MILESTONE1_RLDS_GUIDE.md` - 完整使用指南
+   - 快速开始步骤
+   - 参数说明
+   - 技术细节（TFRecord 解析逻辑）
+   - 常见问题解答
+   - 备选方案（HDF5 转换器）
+
+**修改文件**：
+- `scripts/run_milestone1_test.sh` - 更新为调用新的 RLDS 版本脚本
+  - 修改数据路径为 RLDS 目录
+  - 检查 TFRecord 文件是否存在
+  - 更新参数名称（`demo_idx` → `episode_idx`）
+
+#### 技术改进
+
+**TFRecord 解析逻辑**：
+```python
+# 查找所有 TFRecord 文件
+tfrecord_files = sorted(Path(data_dir).glob("*.tfrecord*"))
+
+# 创建 Dataset（合并所有 shards）
+dataset = tf.data.TFRecordDataset([str(f) for f in tfrecord_files])
+
+# 遍历到指定的 episode
+for idx, serialized_example in enumerate(dataset):
+    if idx == episode_idx:
+        example = tf.train.Example()
+        example.ParseFromString(serialized_example.numpy())
+        actions = extract_actions(example)
+```
+
+**Episode Index 语义**：
+- **不是** shard 编号（00000, 00001, ...）
+- **是** 遍历所有 episodes 的顺序编号
+- 例如：`episode_idx=0` 表示第一个 episode（可能在任何 shard 中）
+
+#### 使用方法
+
+```bash
+# 方式 1：使用 Bash 脚本（推荐）
+bash scripts/run_milestone1_test.sh
+
+# 方式 2：直接运行 Python
+python experiments/robot/libero/test_khijack_milestone1_rlds.py \
+    --data_dir /storage/v-xiangxizheng/zy_workspace/cache/data/libero_goal_no_noops \
+    --episode_idx 0 \
+    --K 15 \
+    --offset_y 0.05 \
+    --plot \
+    --output_dir ./khijack_outputs
+```
+
+#### 备选方案
+
+如果 TFRecord 解析成本太高，可以考虑：
+1. 创建 `rlds_to_hdf5.py` 转换器
+2. 将 RLDS episodes 转成 HDF5 格式
+3. 复用原有的 HDF5 处理逻辑（如果存在）
+
+#### 相关文件
+- ✅ `experiments/robot/libero/test_khijack_milestone1_rlds.py` - 新测试脚本
+- ✅ `scripts/run_milestone1_test.sh` - 更新的 Bash 脚本
+- ✅ `docs/MILESTONE1_RLDS_GUIDE.md` - 使用指南
+
+---
+
+## 2025-02-24 (上午) - 文档重组
 
 ### 删除的文档及原因
 

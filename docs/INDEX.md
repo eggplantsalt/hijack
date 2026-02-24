@@ -19,6 +19,10 @@
 - 详细步骤（复制粘贴即可）
 - 故障排除指南
 
+### ⚠️ 遇到 Milestone 1 测试问题？
+→ **[MILESTONE1_RLDS_GUIDE.md](MILESTONE1_RLDS_GUIDE.md)** - RLDS 数据格式适配指南  
+→ **[MILESTONE1_FIX_SUMMARY.md](MILESTONE1_FIX_SUMMARY.md)** - 测试脚本修复总结
+
 ---
 
 ## 📚 我想了解技术细节
